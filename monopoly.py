@@ -1,6 +1,6 @@
 from random import randint
 from collections import defaultdict
-from itertools import cycle
+from itertools import cycle, combinations
 
 JAIL_TILE = 10
 GOTO_JAIL_TILE = 30
@@ -8,11 +8,15 @@ GOTO_JAIL_TILE = 30
 class GoToJailException(Exception):
     pass
 
+class BankruptException(Exception):
+    pass
+
 class DeedPrices(object):
 
     def __init__(self):
         self.deed_cost = {}
         self.house_cost = {}
+        self.mortgage = {}
         self.rent = defaultdict(lambda: [0] * 6)
         self.color = {}
         self.colors = defaultdict(list)
@@ -25,6 +29,7 @@ class DeedPrices(object):
 
                 self.deed_cost[tile] = int(deed['deed_cost'])
                 self.house_cost[tile] = int(deed['house_cost'])
+                self.mortgage[tile] = int(deed['deed_cost']) / 2
 
                 self.rent[tile] = [int(deed['rent']),
                                    int(deed['house_1']),
@@ -39,7 +44,8 @@ class DeedPrices(object):
 class Board(object):
 
     def __init__(self):
-        self.players = [Player(1500), BuyAll(1500), BuyFrom(1500, 10), BuyBetween(1500, 10, 20)]
+        self.players = [Player(self), BuyAll(self), BuyFrom(self, 10), BuyBetween(self, 10, 20)]
+        # self.players = [Player(self), BuyAll(self)]
         self.history = defaultdict(list)
         self.position = defaultdict(int)
         self.jail_turns_left = defaultdict(int)
@@ -61,17 +67,29 @@ class Board(object):
         self.deed_owners[36] = self.bank  # chance
         self.deed_owners[38] = self.bank  # luxury tax
 
+        self.is_mortgaged = [False] * 40
+
         self.houses = defaultdict(int)
 
     def get_price(self, position):
         if self.deed_owners[position] != self.bank:
-            nr_houses = self.houses[position]
-            if nr_houses == 0:
-                color = self.prices.color[position]
-                if all(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color]):
-                    # all houses owned by the same player?
-                    return self.prices.rent[position][nr_houses] * 2
-            return self.prices.rent[position][nr_houses]
+            color = self.prices.color[position]
+            if color == 'rr':
+                nr_owned = sum(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color])
+                return self.prices.rent[position][nr_owned]
+
+            elif color == 'utility':
+                nr_owned = sum(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color])
+                d1, d2 = self.dice_roll()
+                return self.prices.rent[position][nr_owned] * (d1 + d2)
+
+            else:
+                nr_houses = self.houses[position]
+                if nr_houses == 0:
+                    if all(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color]):
+                        # all houses owned by the same player?
+                        return self.prices.rent[position][nr_houses] * 2
+                return self.prices.rent[position][nr_houses]
         return 0
 
     def dice_roll(self):
@@ -79,6 +97,16 @@ class Board(object):
 
     def get_position(self, player):
         return self.position[player]
+
+    def get_deeds(self, player):
+        return [tile for tile, owner in enumerate(self.deed_owners) if owner == player]
+
+    def get_mortgagable_deeds(self, player):
+        return [tile for tile, owner in enumerate(self.deed_owners) if owner == player and not self.is_mortgaged[tile]]
+
+    def get_mortgage(self, tile):
+        self.is_mortgaged[tile] = True
+        self.deed_owners[tile].receive_cash(self.prices.mortgage[tile])
 
     def update_position(self, player, d1, d2):
         old_position = self.position[player]
@@ -95,7 +123,7 @@ class Board(object):
         # available for purchase?
         if self.deed_owners[new_position]:
             # no, maybe we have to pay?
-            if self.deed_owners[new_position] != player:
+            if self.deed_owners[new_position] != player and not self.is_mortgaged[new_position]:
                 amount = self.get_price(new_position)
                 player.pay_up(amount)
 
@@ -145,14 +173,42 @@ class Board(object):
                     self.jail_turns_left[p] = 2
                 self.history[p].append(self.position[p])
 
+            except BankruptException:
+                p.is_bankrupt = True
+                nr_active = sum(not p.is_bankrupt for p in self.players)
+                if nr_active == 1:
+                    print "Game finished after %d turns" % turn
+                    break
+
 class Player(object):
-    def __init__(self, cash_left):
-        self.cash_left = cash_left
+    def __init__(self, board):
+        self.board = board
+        self.cash_left = 1500
+        self.is_bankrupt = False
 
     def buy_position(self, position, price):
         return False
 
     def pay_up(self, amount):
+        if amount > self.cash_left:
+            my_deeds = self.board.get_mortgagable_deeds(self)
+
+            # mortgage as few deeds as possible
+            deeds_to_sell = 1
+            while deeds_to_sell < len(my_deeds):
+                for deeds in combinations(my_deeds, deeds_to_sell):
+                    raises_amount = sum(self.board.prices.mortgage[deed] for deed in deeds)
+                    if raises_amount + self.cash_left > amount:
+                        for deed in deeds:
+                            self.board.get_mortgage(deed)
+                        break
+
+                deeds_to_sell += 1
+
+            else:
+                # did not break -> we are bankrupt
+                raise BankruptException()
+
         self.cash_left -= amount
 
     def receive_cash(self, amount):
@@ -165,8 +221,8 @@ class BuyAll(Player):
 
 class BuyFrom(BuyAll):
 
-    def __init__(self, cash_left, start_index):
-        super(BuyFrom, self).__init__(cash_left)
+    def __init__(self, board, start_index):
+        super(BuyFrom, self).__init__(board)
         self.start_index = start_index
 
     def buy_position(self, position, price):
@@ -176,8 +232,8 @@ class BuyFrom(BuyAll):
 
 class BuyBetween(BuyFrom):
 
-    def __init__(self, cash_left, start_index, until_index):
-        super(BuyBetween, self).__init__(cash_left, start_index)
+    def __init__(self, board, start_index, until_index):
+        super(BuyBetween, self).__init__(board, start_index)
         self.until_index = until_index
 
     def buy_position(self, position, price):
@@ -190,11 +246,10 @@ class Bank(object):
 
 if __name__ == '__main__':
     b = Board()
-    b.start_game(1000)
+    b.start_game(10000)
 
     for p in b.players:
-        print p, p.cash_left
-
+        print p, p.cash_left, p.is_bankrupt
 
     for i, d in enumerate(b.deed_owners):
-        print i, d
+        print i, d, b.is_mortgaged[i]
