@@ -1,6 +1,8 @@
 from random import randint
 from collections import defaultdict
 from itertools import cycle, combinations
+import pandas as pd
+import uuid
 from __builtin__ import False
 
 JAIL_TILE = 10
@@ -110,6 +112,9 @@ class Board(object):
 
         self.money_raised = [0] * 40
         self.money_invested = [0] * 40
+
+        self.game_id = uuid.uuid4().get_hex()[:10]
+        self.player_log = pd.DataFrame({'player_id' : [], 'cash' : [], 'game_id' : []})
 
     def get_price(self, player, position):
         if self.deed_owners[position] != self.bank:
@@ -318,7 +323,13 @@ class Board(object):
         return False
 
     def log_state(self):
-        pass
+        # copy current state into pandas dataframe and append
+        players_noq = pd.DataFrame({
+            'player_id' : [p.id for p in self.players], 
+            'cash' : [self.players_cash[i] for i in self.players_cash], 
+            'game_id' : self.game_id
+        })
+        self.player_log = self.player_log.append(players_noq, ignore_index=True)
 
     def start_game(self, max_turns=100):
         for turn, p in enumerate(cycle(self.players)):
@@ -377,6 +388,8 @@ class Board(object):
                 # anything else?
                 p.anything_else()
 
+            self.log_state()
+
     def declare_bankrupt(self, player, caused_by):
         assert not player.is_bankrupt
         player.is_bankrupt = True
@@ -395,6 +408,7 @@ class Board(object):
 class Player(object):
     def __init__(self):
         self.is_bankrupt = False
+        self.id = uuid.uuid4().get_hex()[:10]
 
     def buy_position(self, position, amount):
         return False
