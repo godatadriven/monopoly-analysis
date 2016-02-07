@@ -317,6 +317,9 @@ class Board(object):
 
         return False
 
+    def log_state(self):
+        pass
+
     def start_game(self, max_turns=100):
         for turn, p in enumerate(cycle(self.players)):
             if turn == max_turns:
