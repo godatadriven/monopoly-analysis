@@ -6,7 +6,7 @@ from monopoly import BuyAll, Board, GaPlayer
 
 def calculate(bidding_list):
     score = 0
-    for _ in range(1000):
+    for _ in range(5000):
         b = Board([GaPlayer(bidding_list), BuyAll()])
         if b.start_game(250):
             if b.players[1].is_bankrupt:
@@ -17,8 +17,24 @@ def calculate(bidding_list):
     return score
 
 evaluated = {}
+def key_chromosome(chromosome):
+    chromosome = list(chromosome)
+    chromosome[0] = 0
+    chromosome[10] = 0
+    chromosome[20] = 0
+    chromosome[30] = 0
+    chromosome[2] = 0
+    chromosome[4] = 0
+    chromosome[7] = 0
+    chromosome[17] = 0
+    chromosome[22] = 0
+    chromosome[33] = 0
+    chromosome[36] = 0
+    chromosome[38] = 0
+    return ",".join(map(str, list(chromosome)))
+
 def eval_func(chromosome):
-    key = ",".join(map(str, list(chromosome)))
+    key = key_chromosome(chromosome)
     if key not in evaluated:
         evaluated[key] = calculate(list(chromosome))
         print key, evaluated[key]

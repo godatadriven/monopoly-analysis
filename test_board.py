@@ -48,23 +48,21 @@ class TestBoard(TestCase):
         cash_left = 1500 - 60 - 60
         self.assertEqual(self.board.get_cash_left(self.p), cash_left)
 
-        while self.board.add_house(self.p, "purple"):
-            cash_left -= 50
-            self.assertEqual(self.board.get_cash_left(self.p), cash_left)
+        self.board.add_house(self.p, 1)
+        self.board.add_house(self.p, 1)
 
-        self.assertEqual(cash_left, 880)
-        self.assertEqual(self.board.get_houses(self.p), [(1, 5), (3, 5)])
+        self.assertEqual(self.board.get_houses(self.p), [(1, 1), (3, 0)])
 
         self.board.sell_house(self.p, 1)
         self.assertEqual(self.board.get_cash_left(self.p), 905)
-        self.assertTrue(self.board.add_house(self.p, "purple"))
+        self.assertTrue(self.board.add_house(self.p, 1))
 
     def test_morgage_house(self):
         self.board.buy_position(self.p, 1)
         self.board.buy_position(self.p, 3)
 
-        self.board.add_house(self.p, "purple")
-        self.board.add_house(self.p, "purple")
+        self.board.add_house(self.p, 1)
+        self.board.add_house(self.p, 3)
         self.assertEqual(self.board.get_houses(self.p), [(1, 1), (3, 1)])
 
         self.assertFalse(self.board.add_mortgage(self.p, 1))

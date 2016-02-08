@@ -47,6 +47,12 @@ class DeedPrices(object):
                 self.color[tile] = deed['color']
                 self.colors[deed['color']].append(tile)
 
+    def print_deeds(self, indexes):
+        for index, value in enumerate(indexes):
+            if value and index in self.color:
+                print self.color[index], self.name[index]
+
+
 class NotSpecial(object):
 
     def get_price(self, player):
@@ -71,7 +77,9 @@ class Board(object):
     def __init__(self, players=None):
         if players is None:
             self.players = [Player(), BuyAll(), BuyFrom(10), BuyBetween(10, 20), GaPlayer([0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1])]
-            self.players = [BuyAll(), GaPlayer([0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1])]
+            self.players = [BuyAll(), GaPlayer([0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1])]
+            self.players = [BuyAll(), GaPlayer([0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1])]
+            self.players = [BuyAll(), GaPlayer([0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1])]
         else:
             self.players = players
 
@@ -110,6 +118,7 @@ class Board(object):
 
         self.money_raised = [0] * 40
         self.money_invested = [0] * 40
+        self.caused_bankruptcy = [0] * 40
 
     def get_price(self, player, position):
         if self.deed_owners[position] != self.bank:
@@ -311,7 +320,6 @@ class Board(object):
                         bid_changed = True
 
         if current_bid[0] > initial_bid:
-            print "auction for %d raised %d, orig amount %d" % (tile, current_bid[0], amount)
             self.buy_deed(current_bid[1], tile, current_bid[0])
             return current_bid[0]
 
@@ -364,6 +372,7 @@ class Board(object):
                 except BankruptException as b:
                     # print "Player", p, "went bankrupt", b, "caused by", b.caused_by
                     self.declare_bankrupt(p, b.caused_by)
+                    self.caused_bankruptcy[self.position[p]] += 1
 
                     nr_active = sum(not p.is_bankrupt for p in self.players)
                     if nr_active == 1:
@@ -402,6 +411,13 @@ class Player(object):
     def anything_else(self):
         pass
 
+    def sort_tiles(self, a, b):
+        # prefer highest rent
+        return cmp(self.board.prices.rent[b], self.board.prices.rent[a])
+
+    def houses_wanted(self, tile):
+        return 5
+
     def raise_amount(self, amount):
         for _ in range(5):
             # sell as few houses as possible
@@ -424,6 +440,7 @@ class Player(object):
                 self.board.sell_house(self, tile)
 
         my_deeds = self.board.get_mortgagable_deeds(self)
+        my_deeds.sort(cmp=self.sort_tiles, reverse=True)
 
         # hold a public auction to raise at least more than the mortgage is worth
         for deed in my_deeds:
@@ -465,24 +482,30 @@ class BuyAll(Player):
     def anything_else(self):
         # remove mortgages
         mortgages_owned = self.board.get_morgages_owned(self)
+        mortgages_owned.sort(cmp=self.sort_tiles)
+
         for tile in mortgages_owned:
             self.board.sell_mortgage(self, tile)
 
-        def cmp_tiles(a, b):
-            # need to build on tile with fewest houses first
-            houses_cmp = cmp(self.board.houses[a], self.board.houses[b])
-            if houses_cmp == 0:
-                # then prefer highest rent
-                return cmp(self.board.prices.rent[b], self.board.prices.rent[a])
-            return houses_cmp
-
         # add as many houses as possible
         streets_owned = self.board.get_streets_owned(self)
-        for color in streets_owned:
-            tiles = self.board.prices.colors[color][:]
-            tiles.sort(cmp=cmp_tiles)
-            for tile in tiles:
-                self.board.add_house(self, tile)
+        while True:
+            possible_tiles = []
+            added_house = False
+
+            for color in streets_owned:
+                min_houses = min(self.board.houses[tile] for tile in self.board.prices.colors[color])
+                for tile in self.board.prices.colors[color]:
+                    if self.board.houses[tile] == min_houses and self.board.houses[tile] < self.houses_wanted(tile):
+                        possible_tiles.append(tile)
+            possible_tiles.sort(cmp=self.sort_tiles)
+
+            for tile in possible_tiles:
+                if self.board.add_house(self, tile):
+                    added_house = True
+
+            if not added_house:
+                break
 
 class BuyFrom(BuyAll):
 
@@ -514,6 +537,21 @@ class GaPlayer(BuyAll):
     def __str__(self):
         return "GaPlayer '%s'" % self.bidding_list
 
+class GaHousePlayer(BuyAll):
+
+    def __init__(self, bidding_list):
+        super(GaHousePlayer, self).__init__()
+        self.bidding_list = bidding_list
+
+    def buy_position(self, position, amount):
+        return self.bidding_list[position]
+
+    def houses_wanted(self, tile):
+        return self.bidding_list[tile] - 1
+
+    def __str__(self):
+        return "GaHousePlayer '%s'" % self.bidding_list
+
 class Bank(object):
     pass
 
@@ -529,6 +567,7 @@ if __name__ == '__main__':
     nr_turns = defaultdict(int)
     money_raised = defaultdict(int)
     money_invested = defaultdict(int)
+    caused_bankruptcy = defaultdict(int)
     for _ in range(1000):
         b = Board()
         turns = b.start_game(10000)
@@ -544,6 +583,9 @@ if __name__ == '__main__':
             for tile, amount in enumerate(b.money_invested):
                 money_invested[tile] += amount
 
+            for tile, amount in enumerate(b.caused_bankruptcy):
+                caused_bankruptcy[tile] += amount
+
         else:
             # print_game(b)
             pass
@@ -552,7 +594,9 @@ if __name__ == '__main__':
         print player, times, nr_turns[player] / times
 
     for tile, amount in money_raised.iteritems():
-        print tile, amount, money_invested[tile], (amount / float(money_invested[tile])) if money_invested[tile] else 0
+        print tile, amount, money_invested[tile], (amount / float(money_invested[tile])) if money_invested[tile] else 0, caused_bankruptcy[tile]
+
+    b.prices.print_deeds([1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1])
 
 #     b = Board()
 #     b.start_game(10000)
