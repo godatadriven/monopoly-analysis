@@ -2,6 +2,7 @@ from itertools import combinations
 from collections import defaultdict
 from monopoly import BuyAll, Board, GaHousePlayer
 from random import randint
+from joblib import Parallel, delayed
 
 def calculate(bidding_list):
     score = 0
@@ -15,34 +16,32 @@ def calculate(bidding_list):
 
     return score
 
-evaluated = {}
 def key_chromosome(chromosome):
-    chromosome[0] = 0
-    chromosome[10] = 0
-    chromosome[20] = 0
-    chromosome[30] = 0
-    chromosome[2] = 0
-    chromosome[4] = 0
-    chromosome[7] = 0
-    chromosome[17] = 0
-    chromosome[22] = 0
-    chromosome[33] = 0
-    chromosome[36] = 0
-    chromosome[38] = 0
+    def set_max_diff(indexes):
+        max_houses = min(chromosome[index] for index in indexes) + 1
+        for index in indexes:
+            chromosome[index] = min(chromosome[index], max_houses)
+
+    for index in [0, 10, 20, 30, 2, 4, 7, 17, 22, 33, 36, 38]:
+        chromosome[index] = 0
 
     # can only buy the railroads and utilities
     for i in [5, 15, 25, 35, 12, 28]:
         chromosome[i] = min(1, chromosome[i])
 
-    # TODO: add house constraints
+    set_max_diff([1, 3])
+    set_max_diff([6, 8, 9])
+    set_max_diff([11, 13, 14])
+    set_max_diff([16, 18, 19])
+    set_max_diff([21, 23, 24])
+    set_max_diff([26, 27, 29])
+    set_max_diff([31, 32, 34])
+    set_max_diff([37, 39])
+
     return ",".join(map(str, chromosome))
 
 def eval_func(chromosome):
-    if chromosome not in evaluated:
-        evaluated[chromosome] = calculate(map(int, chromosome.split(",")))
-        print chromosome, evaluated[chromosome]
-
-    return evaluated[chromosome]
+    return calculate(map(int, chromosome.split(","))), chromosome
 
 def generate_random():
     return key_chromosome([randint(0, 6) for _ in xrange(40)])
@@ -71,31 +70,48 @@ def mutate_agent(chromosome, max_mutations):
 
     return key_chromosome(chromosome)
 
-population_size = 100
-nr_populations = 100
+if __name__ == '__main__':
+    population_size = 100
+    nr_populations = 100
+    
+    population = set(generate_random() for _ in xrange(population_size))
+    population.add(key_chromosome(map(int, '0,6,0,5,0,2,4,0,4,4,0,6,0,5,5,2,4,0,5,3,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,4,0,5,0,3'.split(","))))
+    population.add(key_chromosome(map(int, '0,6,0,6,0,4,4,0,4,4,0,3,0,5,5,3,4,0,5,6,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,4,0,5,0,2'.split(","))))
 
-population = set(generate_random() for _ in xrange(population_size))
-population.add(key_chromosome(map(int, '0,6,0,5,0,2,4,0,4,4,0,6,0,5,5,2,4,0,5,3,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,4,0,5,0,3'.split(","))))
-population.add(key_chromosome(map(int, '0,6,0,6,0,4,4,0,4,4,0,3,0,5,5,3,4,0,5,6,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,4,0,5,0,2'.split(","))))
-for generation in range(nr_populations):
-    generation_scores = []
-    for chromosome in population:
-        generation_scores.append((eval_func(chromosome), chromosome))
-    generation_scores.sort(reverse=True)
+    evaluated = {}
 
-    print generation, generation_scores[:10]
+    for generation in range(nr_populations):
+        to_schedule = []
+        generation_scores = []
+        
+        for chromosome in population:
+            if chromosome in evaluated:
+                generation_scores.append((evaluated[chromosome], chromosome))
+            else:
+                to_schedule.append(chromosome)
+        
+        generation_scores.extend(Parallel(n_jobs=-1, verbose=100)(delayed(eval_func)(chromosome) for chromosome in to_schedule))
+        generation_scores.sort(reverse=True)
 
-    population = set()
-    for score, chormosome in generation_scores[:10]:
-        # Create 1 exact copy
-        population.add(chormosome)
+        for score, chromosome in generation_scores:
+            evaluated[chromosome] = score
 
-        # Create 9 offsprings with point mutations
-        for offspring in range(3):
-            population.add(swap_agent(chormosome, 3))
+        print "-"*20
+        print generation
+        print "-"*20
+        print generation_scores[:10]
 
-        for offspring in range(3):
-            population.add(mutate_agent(chormosome, 3))
+        population = set()
+        for score, chormosome in generation_scores[:10]:
+            # Create 1 exact copy
+            population.add(chormosome)
 
-        for offspring in range(3):
-            population.add(mutate_agent(chormosome, 9))
+            # Create 9 offsprings with point mutations
+            for offspring in range(3):
+                population.add(swap_agent(chormosome, 3))
+    
+            for offspring in range(3):
+                population.add(mutate_agent(chormosome, 3))
+    
+            for offspring in range(3):
+                population.add(mutate_agent(chormosome, 9))

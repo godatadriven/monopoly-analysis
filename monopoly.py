@@ -6,6 +6,9 @@ from __builtin__ import False
 JAIL_TILE = 10
 GOTO_JAIL_TILE = 30
 
+def dice_roll():
+    return randint(1, 6), randint(1, 6)
+
 class GoToJailException(Exception):
     pass
 
@@ -15,62 +18,123 @@ class BankruptException(Exception):
         super(BankruptException, self).__init__(msg)
         self.caused_by = caused_by
 
-class DeedPrices(object):
+class Deed(object):
+
+    def __init__(self, name, tile, deed_cost, house_cost, rent):
+        self.name = name
+        self.tile = tile
+        self.deed_cost = int(deed_cost)
+        self.house_cost = int(house_cost)
+        self.rent = map(int, rent)
+
+        self.owner = None
+        self.street = None
+
+        self.is_mortgaged = False
+        self.houses = 0
+
+    @property
+    def mortgage(self):
+        return self.deed_cost / 2
+
+    def is_owned(self, player):
+        return self.owner == player
+
+    def can_mortgage(self, player):
+        return not self.is_mortgaged and self.houses == 0 and self.owner == player
+
+    def get_price(self, player):
+        if self.owner and self.owner != player and not self.is_mortgaged:
+            if self.street.color == 'rr':
+                nr_owned = self.street.nr_owned(self.owner)
+                return self.rent[nr_owned]
+
+            if self.street.color == 'utility':
+                nr_owned = self.street.nr_owned(self.owner)
+                d1, d2 = dice_roll()
+                return self.rent[nr_owned] * (d1 + d2)
+            
+            if self.houses == 0 and self.street.is_owned(self.owner):
+                # all houses owned by the same player?
+                return self.rent[0] * 2
+            return self.rent[self.houses]
+        return 0
+
+
+class NotSpecial(Deed):
 
     def __init__(self):
-        self.deed_cost = {}
-        self.house_cost = {}
-        self.mortgage = {}
-        self.name = defaultdict(str)
-        self.rent = defaultdict(lambda: [0] * 6)
-        self.color = {}
-        self.colors = defaultdict(list)
-
-        with open("monopoly.csv") as f:
-            header = f.readline().rstrip().split(",")
-            for line in f:
-                deed = dict(zip(header, line.rstrip().split(",")))
-                tile = int(deed['tile'])
-
-                self.deed_cost[tile] = int(deed['deed_cost'])
-                self.house_cost[tile] = int(deed['house_cost'])
-                self.mortgage[tile] = int(deed['deed_cost']) / 2
-                self.name[tile] = deed['name']
-
-                self.rent[tile] = [int(deed['rent']),
-                                   int(deed['house_1']),
-                                   int(deed['house_2']),
-                                   int(deed['house_3']),
-                                   int(deed['house_4']),
-                                   int(deed['hotel'])]
-
-                self.color[tile] = deed['color']
-                self.colors[deed['color']].append(tile)
-
-    def print_deeds(self, indexes):
-        for index, value in enumerate(indexes):
-            if value and index in self.color:
-                print self.color[index], self.name[index]
-
-
-class NotSpecial(object):
+        super(NotSpecial, self).__init__("not special", -1, 0, 0, [])
 
     def get_price(self, player):
         return 0
 
-class IncomeTax(object):
+
+class IncomeTax(Deed):
 
     def __init__(self, board):
+        super(IncomeTax, self).__init__("income tax", -1, 0, 0, [])
         self.board = board
 
     def get_price(self, player):
         cash_left = self.board.get_cash_left(player)
         return min(200, cash_left * 0.1)
 
-class LuxuryTax(object):
+
+class LuxuryTax(Deed):
+
+    def __init__(self):
+        super(LuxuryTax, self).__init__("luxury tax", -1, 0, 0, [])
 
     def get_price(self, player):
         return 75
+
+
+class Street(object):
+
+    def __init__(self, color):
+        self.color = color
+        self.deeds = []
+
+    def add_deed(self, deed):
+        self.deeds.append(deed)
+        deed.street = self
+    
+    def is_owned(self, player):
+        return all(deed.owner == player for deed in self.deeds)
+    
+    def nr_owned(self, player):
+        return sum(deed.owner == player for deed in self.deeds)
+    
+    def can_add_house(self, player):
+        if not self.color in ('rr', 'utility'):
+            return all(not deed.is_mortgaged for deed in self.deeds)
+        return False 
+
+            
+class DeedPrices(object):
+
+    @staticmethod
+    def load_deeds():
+        deeds = defaultdict(NotSpecial)
+        streets = {}
+
+        with open("monopoly.csv") as f:
+            header = f.readline().rstrip().split(",")
+            for line in f:
+                deed = dict(zip(header, line.rstrip().split(",")))
+
+                tile = int(deed['tile'])
+
+                rents = [deed['rent'], deed['house_1'], deed['house_2'], deed['house_3'], deed['house_4'], deed['hotel']]
+                deeds[tile] = Deed(deed['name'], tile, deed['deed_cost'], deed['house_cost'], rents)
+
+                if not deed['color'] in streets:
+                    streets[deed['color']] = Street(deed['color'])
+                streets[deed['color']].add_deed(deeds[tile])
+
+        return deeds, streets
+
 
 class Board(object):
 
@@ -90,94 +154,53 @@ class Board(object):
         self.history = defaultdict(list)
         self.position = defaultdict(int)
         self.jail_turns_left = defaultdict(int)
+
         self.bank = Bank()
-        self.prices = DeedPrices()
+        self.deeds, self.streets = DeedPrices.load_deeds()
         self.players_cash = dict((player, 1500) for player in self.players)
 
-        self.deed_owners = [None] * 40
-        self.deed_owners[0] = self.bank
-        self.deed_owners[10] = self.bank
-        self.deed_owners[20] = self.bank
-        self.deed_owners[30] = self.bank
+        self.deeds[4] = IncomeTax(self)
+        self.deeds[38] = LuxuryTax()
 
-        self.deed_owners[2] = self.bank  # community chest
-        self.deed_owners[4] = self.bank  # income tax
-        self.deed_owners[7] = self.bank  # chance
-        self.deed_owners[17] = self.bank  # community chest
-        self.deed_owners[22] = self.bank  # chance
-        self.deed_owners[33] = self.bank  # community chest
-        self.deed_owners[36] = self.bank  # chance
-        self.deed_owners[38] = self.bank  # luxury tax
-
-        self.special_deeds = [NotSpecial()] * 40
-        self.special_deeds[4] = IncomeTax(self)
-        self.special_deeds[38] = LuxuryTax()
-
-        self.is_mortgaged = [False] * 40
-        self.houses = [0] * 40
+        for index in [0, 10, 20, 30, 40, 2, 4, 7, 17, 22, 33, 36, 38]:
+            self.deeds[index].owner = self.bank
 
         self.money_raised = [0] * 40
         self.money_invested = [0] * 40
         self.caused_bankruptcy = [0] * 40
 
-    def get_price(self, player, position):
-        if self.deed_owners[position] != self.bank:
-            color = self.prices.color[position]
-            if color == 'rr':
-                nr_owned = sum(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color])
-                return self.prices.rent[position][nr_owned]
-
-            elif color == 'utility':
-                nr_owned = sum(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color])
-                d1, d2 = self.dice_roll()
-                return self.prices.rent[position][nr_owned] * (d1 + d2)
-
-            else:
-                nr_houses = self.houses[position]
-                if nr_houses == 0:
-                    if all(self.deed_owners[tile] == self.deed_owners[position] for tile in self.prices.colors[color]):
-                        # all houses owned by the same player?
-                        return self.prices.rent[position][nr_houses] * 2
-                return self.prices.rent[position][nr_houses]
-
-        return self.special_deeds[position].get_price(player)
-
-    def dice_roll(self):
-        return randint(1, 6), randint(1, 6)
-
     def get_position(self, player):
         return self.position[player]
 
-    def buy_deed(self, player, tile, amount=None):
-        if self.deed_owners[tile] is None:
+    def buy_deed(self, player, deed, amount=None):
+        if deed.owner is None:
             if amount is None:
-                amount = self.prices.deed_cost[tile]
+                amount = deed.deed_cost
+
             cash_left = self.players_cash[player]
 
             if cash_left >= amount:
-                self.deed_owners[tile] = player
+                deed.owner = player
                 self.players_cash[player] -= amount
-                self.money_invested[tile] += amount
+                self.money_invested[deed.tile] += amount
 
                 return True
         return False
 
-    def transfer_deed(self, player, other_player, tile):
-        assert player == self.deed_owners[tile]
+    def transfer_deed(self, player, other_player, deed):
+        if deed.is_owned(player):
+            if deed.houses == 0 and other_player != self.bank:
+                # need to pay 10% interest over mortgaged properties
+                if deed.is_mortgaged:
+                    amount = deed.deed_cost * .1
+                else:
+                    amount = 0
 
-        if self.houses[tile] == 0 and other_player != self.bank:
-            # need to pay 10% interest over mortgaged properties
-            if self.is_mortgaged[tile]:
-                amount = self.prices.deed_cost[tile] * .1
-            else:
-                amount = 0
-
-            cash_left = self.players_cash[player]
-            if cash_left > amount:
-                self.deed_owners[tile] = other_player
-                self.players_cash[other_player] -= amount
-                return True
-
+                cash_left = self.players_cash[player]
+                if cash_left > amount:
+                    deed.owner = other_player
+                    self.players_cash[other_player] -= amount
+                    return True
         return False
 
     def get_cash_left(self, player):
@@ -199,81 +222,67 @@ class Board(object):
             self.players_cash[caused_by] += amount
 
     def get_deeds(self, player):
-        return [tile for tile, owner in enumerate(self.deed_owners) if owner == player]
+        return [deed for deed in self.deeds.itervalues() if deed.is_owned(player)]
 
     def get_mortgagable_deeds(self, player):
-        return [tile for tile, owner in enumerate(self.deed_owners) if owner == player and not self.is_mortgaged[tile] and self.houses[tile] == 0]
+        return [deed for deed in self.deeds.itervalues() if deed.can_mortgage(player)]
 
-    def add_mortgage(self, player, tile):
-        assert player == self.deed_owners[tile]
+    def get_morgages_owned(self, player):
+        return [deed for deed in self.deeds.itervalues() if deed.is_owned(player) and deed.is_mortgaged]
 
-        if not self.is_mortgaged[tile] and self.houses[tile] == 0:
-            self.is_mortgaged[tile] = True
-            self.players_cash[player] += self.prices.mortgage[tile]
+    def get_houses(self, player):
+        return [(deed, deed.houses) for deed in self.deeds.itervalues() if deed.is_owned(player) and deed.houses > 0]
+
+    def get_streets_owned(self, player):
+        return [color for color, street in self.streets.iteritems() if street.is_owned(player)]
+
+    def add_mortgage(self, player, deed):
+        if deed.can_mortgage(player):
+            deed.is_mortgaged = True
+            self.players_cash[player] += deed.mortgage
             return True
         return False
 
-    def sell_mortgage(self, player, tile):
-        assert player == self.deed_owners[tile]
+    def sell_mortgage(self, player, deed):
+        if deed.is_owned(player):
+            cost = deed.mortgage * 1.1
+            if self.players_cash[player] > cost:
+                deed.is_mortgaged = False
+                self.players_cash[player] -= cost
 
-        cost = self.prices.mortgage[tile] * 1.1
-        if self.players_cash[player] > cost:
-            self.is_mortgaged[tile] = False
-            self.players_cash[player] -= cost
+    def add_house(self, player, deed):
+        if deed.street.can_add_house(player):
+            houses_build = deed.houses
+            min_houses_build = min(otherdeed.houses for otherdeed in deed.street.deeds)
 
-    def get_morgages_owned(self, player):
-        return [tile for tile, owner in enumerate(self.deed_owners) if owner == player and self.is_mortgaged[tile]]
+            if houses_build == min_houses_build and houses_build < 5:
+                if houses_build < 4:
+                    nr_houses_sold = sum(deed.houses for deed in self.deeds.itervalues() if deed.houses < 5)
+                    if nr_houses_sold >= 32:
+                        return False
 
-    def get_streets_owned(self, player):
-        deeds = self.get_deeds(player)
-        colors = set(self.prices.color[tile] for tile in deeds)
+                if houses_build == 4:
+                    nr_hotels_sold = sum(deed.houses == 5 for deed in self.deeds.itervalues())
+                    if nr_hotels_sold >= 12:
+                        return False
 
-        all_owned = []
-        for color in colors:
-            if all(self.deed_owners[tile] == player for tile in self.prices.colors[color]):
-                all_owned.append(color)
-
-        return all_owned
-
-    def add_house(self, player, tile):
-        color = self.prices.color[tile]
-        if color not in ('rr', 'utility'):  # cannot buy houses for rr and utility
-            if all(not self.is_mortgaged[street_tile] for street_tile in self.prices.colors[color]):
-                houses_build = self.houses[tile]
-                min_houses_build = min(self.houses[street_tile] for street_tile in self.prices.colors[color])
-
-                if houses_build == min_houses_build and houses_build < 5:
-                    if houses_build < 4:
-                        nr_houses_sold = sum(nr_houses for nr_houses in self.houses if nr_houses < 5)
-                        if nr_houses_sold >= 32:
-                            return False
-
-                    if houses_build == 4:
-                        nr_hotels_sold = sum(nr_houses == 5 for nr_houses in self.houses)
-                        if nr_hotels_sold >= 12:
-                            return False
-
-                    cost = self.prices.house_cost[tile]
-                    if self.players_cash[player] > cost:
-                        self.houses[tile] += 1
-                        self.players_cash[player] -= cost
-                        self.money_invested[tile] += cost
-                        return True
+                cost = deed.house_cost
+                if self.players_cash[player] > cost:
+                    deed.houses += 1
+                    self.players_cash[player] -= cost
+                    self.money_invested[deed.tile] += cost
+                    return True
         return False
 
-    def sell_house(self, player, tile):
-        assert player == self.deed_owners[tile]
-
-        if self.houses[tile] > 0:
-            self.houses[tile] -= 1
-            self.players_cash[player] += self.prices.house_cost[tile] / 2
-
-    def get_houses(self, player):
-        return [(tile, self.houses[tile]) for tile in self.get_deeds(player) if self.houses[tile] > 0]
+    def sell_house(self, player, deed):
+        if deed.is_owned(player) and deed.houses > 0:
+            deed.houses -= 1
+            self.players_cash[player] += deed.house_cost / 2
+            return True
+        return False
 
     def get_house_price(self, color):
-        tile = self.prices.colors[color][0]
-        return self.prices.house_cost[tile]
+        return self.streets[color].deeds[0].house_cost
 
     def update_position(self, player, d1, d2):
         old_position = self.position[player]
@@ -288,25 +297,22 @@ class Board(object):
             self.players_cash[player] += 200
 
         # available for purchase?
-        deed_owner = self.deed_owners[new_position]
-        if deed_owner:
-            if deed_owner != player and not self.is_mortgaged[new_position]:
-                amount = self.get_price(player, new_position)
+        deed = self.deeds[new_position]
+        if deed.owner:
+            if deed.owner != player:
+                amount = deed.get_price(player)
 
-                self.pay_up(player, deed_owner, amount)
+                self.pay_up(player, deed.owner, amount)
                 self.money_raised[new_position] += amount
+
         else:
-            amount = self.prices.deed_cost[new_position]
-            if player.buy_position(new_position, amount) and self.buy_deed(player, new_position):
-                # player bought deed
-                pass
+            amount = deed.deed_cost
+            if not (player.buy_position(deed, amount) and self.buy_deed(player, deed)):
+                # player did not buy deed, auction
+                self.auction(deed, deed.mortgage, self.bank)
 
-            else:
-                # auction off deed
-                self.auction(new_position, self.prices.mortgage[new_position], self.bank)
-
-    def auction(self, tile, initial_bid, initial_owner):
-        amount = self.prices.deed_cost[tile]
+    def auction(self, deed, initial_bid, initial_owner):
+        amount = deed.deed_cost
         bid_changed = True
 
         current_bid = initial_bid, self.bank
@@ -314,13 +320,13 @@ class Board(object):
             bid_changed = False
             for player in self.players:
                 if player != current_bid[1]:  # already highest bidder
-                    bid = player.bid_position(tile, amount, current_bid[0])
+                    bid = player.bid_position(deed, amount, current_bid[0])
                     if bid > current_bid[0] and bid <= self.players_cash[player]:
                         current_bid = (bid, player)
                         bid_changed = True
 
         if current_bid[0] > initial_bid:
-            self.buy_deed(current_bid[1], tile, current_bid[0])
+            self.buy_deed(current_bid[1], deed, current_bid[0])
             return current_bid[0]
 
         return False
@@ -336,7 +342,7 @@ class Board(object):
                     if self.jail_turns_left[p]:
                         self.jail_turns_left[p] -= 1
 
-                        d1, d2 = self.dice_roll()
+                        d1, d2 = dice_roll()
                         if d1 != d2:
                             # third turn? pay_up and update position
                             if self.jail_turns_left[p] == 0:
@@ -351,7 +357,7 @@ class Board(object):
                             self.update_position(p, d1, d2)
                     else:
                         for n in range(1, 4):
-                            d1, d2 = self.dice_roll()
+                            d1, d2 = dice_roll()
 
                             # rolled three times, and eyes are the same -> go to jail
                             if n == 3 and d1 == d2:
@@ -392,20 +398,21 @@ class Board(object):
         self.players_cash[player] = 0
 
         for tile in self.get_deeds(player):
-            # transfer to caused_by, if it failes transfer to bank
+            # transfer to caused_by, if it fails transfer to bank
             if not self.transfer_deed(player, caused_by, tile):
-                self.deed_owners[tile] = None
-                self.is_mortgaged[tile] = False
-                self.houses[tile] = 0
+                deed = self.deeds[tile]
+                deed.owner = None
+                deed.is_mortgaged = False
+                deed.houses = 0
 
 class Player(object):
     def __init__(self):
         self.is_bankrupt = False
 
-    def buy_position(self, position, amount):
+    def buy_position(self, deed, amount):
         return False
 
-    def bid_position(self, position, amount, current_bid):
+    def bid_position(self, deed, amount, current_bid):
         return 0
 
     def anything_else(self):
@@ -413,7 +420,7 @@ class Player(object):
 
     def sort_tiles(self, a, b):
         # prefer highest rent
-        return cmp(self.board.prices.rent[b], self.board.prices.rent[a])
+        return cmp(b.rent[0], a.rent[0])
 
     def houses_wanted(self, tile):
         return 5
@@ -425,26 +432,26 @@ class Player(object):
             houses_to_sell = 1
             while houses_to_sell < len(my_houses):
                 for houses in combinations(my_houses, houses_to_sell):
-                    raises_amount = sum(self.board.prices.house_cost[tile] / 2 for tile, nr_houses in houses)
+                    raises_amount = sum(deed.house_cost / 2 for deed, nr_houses in houses)
                     if raises_amount >= amount:
                         # sell these houses
-                        for tile, _ in houses:
-                            self.board.sell_house(self, tile)
+                        for deed, _ in houses:
+                            self.board.sell_house(self, deed)
                         return
 
                 houses_to_sell += 1
 
-            raises_amount = sum(self.board.prices.house_cost[tile] / 2 for tile, nr_houses in my_houses)
+            raises_amount = sum(deed.house_cost / 2 for deed, nr_houses in my_houses)
             amount -= raises_amount
-            for tile, _ in my_houses:
-                self.board.sell_house(self, tile)
+            for deed, _ in my_houses:
+                self.board.sell_house(self, deed)
 
         my_deeds = self.board.get_mortgagable_deeds(self)
         my_deeds.sort(cmp=self.sort_tiles, reverse=True)
 
         # hold a public auction to raise at least more than the mortgage is worth
         for deed in my_deeds:
-            amount_raised = self.board.auction(deed, self.board.prices.mortgage[deed] + 1, self)
+            amount_raised = self.board.auction(deed, deed.mortgage + 1, self)
             if amount_raised:
                 amount -= amount_raised
                 if amount <= 0:
@@ -454,7 +461,7 @@ class Player(object):
         deeds_to_sell = 1
         while deeds_to_sell < len(my_deeds):
             for deeds in combinations(my_deeds, deeds_to_sell):
-                raises_amount = sum(self.board.prices.mortgage[deed] for deed in deeds)
+                raises_amount = sum(deed.mortgage for deed in deeds)
                 if raises_amount >= amount:
                     for deed in deeds:
                         self.board.add_mortgage(self, deed)
@@ -468,11 +475,11 @@ class Player(object):
 
 class BuyAll(Player):
 
-    def buy_position(self, position, amount):
+    def buy_position(self, deed, amount):
         return True
 
-    def bid_position(self, position, amount, current_bid):
-        if self.buy_position(position, amount):
+    def bid_position(self, deed, amount, current_bid):
+        if self.buy_position(deed, amount):
             # bid at most 10% of what I have left more than amount
             max = amount + self.board.get_cash_left(self) * 0.1
             if max > (current_bid + 1):
@@ -494,14 +501,15 @@ class BuyAll(Player):
             added_house = False
 
             for color in streets_owned:
-                min_houses = min(self.board.houses[tile] for tile in self.board.prices.colors[color])
-                for tile in self.board.prices.colors[color]:
-                    if self.board.houses[tile] == min_houses and self.board.houses[tile] < self.houses_wanted(tile):
-                        possible_tiles.append(tile)
+                min_houses = min(otherdeed.houses for otherdeed in self.board.streets[color].deeds)
+
+                for deed in self.board.streets[color].deeds:
+                    if deed.houses == min_houses and deed.houses < self.houses_wanted(deed.tile):
+                        possible_tiles.append(deed)
             possible_tiles.sort(cmp=self.sort_tiles)
 
-            for tile in possible_tiles:
-                if self.board.add_house(self, tile):
+            for deed in possible_tiles:
+                if self.board.add_house(self, deed):
                     added_house = True
 
             if not added_house:
@@ -531,8 +539,8 @@ class GaPlayer(BuyAll):
         super(GaPlayer, self).__init__()
         self.bidding_list = bidding_list
 
-    def buy_position(self, position, amount):
-        return self.bidding_list[position]
+    def buy_position(self, deed, amount):
+        return self.bidding_list[deed.tile]
 
     def __str__(self):
         return "GaPlayer '%s'" % self.bidding_list
@@ -543,8 +551,8 @@ class GaHousePlayer(BuyAll):
         super(GaHousePlayer, self).__init__()
         self.bidding_list = bidding_list
 
-    def buy_position(self, position, amount):
-        return self.bidding_list[position]
+    def buy_position(self, deed, amount):
+        return self.bidding_list[deed.tile]
 
     def houses_wanted(self, tile):
         return self.bidding_list[tile] - 1
@@ -595,8 +603,6 @@ if __name__ == '__main__':
 
     for tile, amount in money_raised.iteritems():
         print tile, amount, money_invested[tile], (amount / float(money_invested[tile])) if money_invested[tile] else 0, caused_bankruptcy[tile]
-
-    b.prices.print_deeds([1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1])
 
 #     b = Board()
 #     b.start_game(10000)
