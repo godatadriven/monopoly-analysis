@@ -168,6 +168,7 @@ class Board(object):
         self.money_raised = [0] * 40
         self.money_invested = [0] * 40
         self.caused_bankruptcy = [0] * 40
+        self.landed_on = [0] * 40
 
     def get_position(self, player):
         return self.position[player]
@@ -291,6 +292,7 @@ class Board(object):
             raise GoToJailException()
 
         self.history[player].append(new_position)
+        self.landed_on[new_position] += 1
 
         # passed start
         if old_position > new_position:
@@ -473,6 +475,9 @@ class Player(object):
         for deed in my_deeds:
             self.board.add_mortgage(self, deed)
 
+    def __str__(self):
+        return "Player"
+
 class BuyAll(Player):
 
     def buy_position(self, deed, amount):
@@ -515,6 +520,9 @@ class BuyAll(Player):
             if not added_house:
                 break
 
+    def __str__(self):
+        return "BuyAll"
+
 class BuyFrom(BuyAll):
 
     def __init__(self, start_index):
@@ -523,6 +531,10 @@ class BuyFrom(BuyAll):
 
     def buy_position(self, position, amount):
         return position >= self.start_index
+
+    def __str__(self):
+        return "BuyFrom '%d'" % self.start_index
+
 
 class BuyBetween(BuyFrom):
 
@@ -533,11 +545,14 @@ class BuyBetween(BuyFrom):
     def buy_position(self, position, amount):
         return self.start_index <= position <= self.until_index
 
+    def __str__(self):
+        return "BuyBetween '%d-%d'" % (self.start_index, self.until_index)
+
 class GaPlayer(BuyAll):
 
-    def __init__(self, bidding_list):
+    def __init__(self, chromosome):
         super(GaPlayer, self).__init__()
-        self.bidding_list = bidding_list
+        self.bidding_list = map(int, chromosome.split(","))
 
     def buy_position(self, deed, amount):
         return self.bidding_list[deed.tile]
@@ -547,9 +562,9 @@ class GaPlayer(BuyAll):
 
 class GaHousePlayer(BuyAll):
 
-    def __init__(self, bidding_list):
+    def __init__(self, chromosome):
         super(GaHousePlayer, self).__init__()
-        self.bidding_list = bidding_list
+        self.bidding_list = map(int, chromosome.split(","))
 
     def buy_position(self, deed, amount):
         return self.bidding_list[deed.tile]
@@ -576,14 +591,18 @@ if __name__ == '__main__':
     money_raised = defaultdict(int)
     money_invested = defaultdict(int)
     caused_bankruptcy = defaultdict(int)
+    landed_on = defaultdict(int)
+
     for _ in range(1000):
-        b = Board()
-        turns = b.start_game(10000)
+        players = [Player(), BuyAll(), BuyFrom(10), BuyBetween(10, 20)]
+
+        b = Board(players)
+        turns = b.start_game(1000)
         if turns:
             for p in b.players:
                 if not p.is_bankrupt:
-                    won[type(p)] += 1
-                    nr_turns[type(p)] += turns
+                    won[str(p)] += 1
+                    nr_turns[str(p)] += turns
 
             for tile, amount in enumerate(b.money_raised):
                 money_raised[tile] += amount
@@ -594,6 +613,9 @@ if __name__ == '__main__':
             for tile, amount in enumerate(b.caused_bankruptcy):
                 caused_bankruptcy[tile] += amount
 
+            for tile, amount in enumerate(b.landed_on):
+                landed_on[tile] += amount
+
         else:
             # print_game(b)
             pass
@@ -602,9 +624,4 @@ if __name__ == '__main__':
         print player, times, nr_turns[player] / times
 
     for tile, amount in money_raised.iteritems():
-        print tile, amount, money_invested[tile], (amount / float(money_invested[tile])) if money_invested[tile] else 0, caused_bankruptcy[tile]
-
-#     b = Board()
-#     b.start_game(10000)
-#
-
+        print tile, int(amount), money_invested[tile], (amount / float(money_invested[tile])) if money_invested[tile] else 0, caused_bankruptcy[tile], landed_on[tile]
